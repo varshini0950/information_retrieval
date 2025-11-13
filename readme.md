@@ -13,7 +13,7 @@ A complete retrieval framework combining **sparse lexical relevance** and **dens
 
 **NOTE:** All the other files are made by me for creating a base of the project in which I runned only the part of the dataset bier trec covid itself   which are made in intial stages of project
 
-# 📁 Project Structure
+# Project Structure
 
 ```
 ├── make_vectors.py
@@ -147,7 +147,7 @@ Metrics evaluated:
 
 ---
 
-# 🛠️ Recommended Execution Pipeline
+#  Recommended Execution Pipeline
 
 ### **Step 1 — Build Base Vectors**
 ```bash
