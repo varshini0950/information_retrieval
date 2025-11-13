@@ -61,6 +61,69 @@ def topk_pairs(scores: np.ndarray, ids: List[str], K: int) -> List[Tuple[str, fl
     return [(ids[i], float(scores[i])) for i in idx]
 
 
+# ---------- NEW METRICS: P@k, R@k, MAP@k ----------
+
+def compute_precision_at_k(run: Dict[str, List[Tuple[str, float]]],
+                           qrels: Dict[str, Dict[str, int]], k: int = 10) -> float:
+    """Macro-averaged Precision@k."""
+    precs = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        if not rel:
+            continue
+        top = ranked[:k]
+        num_rel = sum(1 for docid, _ in top if rel.get(docid, 0) > 0)
+        precs.append(num_rel / float(len(top)) if top else 0.0)
+    return float(np.mean(precs)) if precs else 0.0
+
+
+def compute_recall_at_k(run: Dict[str, List[Tuple[str, float]]],
+                        qrels: Dict[str, Dict[str, int]], k: int = 10) -> float:
+    """Macro-averaged Recall@k."""
+    recs = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        total_rel = sum(1 for r in rel.values() if r > 0)
+        if total_rel == 0:
+            continue
+        top = ranked[:k]
+        num_rel = sum(1 for docid, _ in top if rel.get(docid, 0) > 0)
+        recs.append(num_rel / float(total_rel))
+    return float(np.mean(recs)) if recs else 0.0
+
+
+def average_precision_at_k_single(qid: str,
+                                  ranked_ids: List[str],
+                                  qrels: Dict[str, Dict[str, int]],
+                                  k: int = 100) -> float:
+    """AP@k for a single query."""
+    rel = qrels.get(qid, {})
+    total_rel = sum(1 for r in rel.values() if r > 0)
+    if total_rel == 0:
+        return 0.0
+
+    num_rel_seen = 0
+    ap = 0.0
+    for i, docid in enumerate(ranked_ids[:k], start=1):
+        if rel.get(docid, 0) > 0:
+            num_rel_seen += 1
+            ap += num_rel_seen / float(i)
+    return ap / float(total_rel) if num_rel_seen > 0 else 0.0
+
+
+def compute_map_at_k(run: Dict[str, List[Tuple[str, float]]],
+                     qrels: Dict[str, Dict[str, int]], k: int = 100) -> float:
+    """Macro-averaged MAP@k (only over queries with at least one relevant)."""
+    aps = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        if not any(r > 0 for r in rel.values()):
+            continue
+        ranked_ids = [d for d, _ in ranked]
+        aps.append(average_precision_at_k_single(qid, ranked_ids, qrels, k))
+    return float(np.mean(aps)) if aps else 0.0
+
+
 # ----------------- Cross-attention fusion model -----------------
 class CrossAttentionFusion(nn.Module):
     """
@@ -142,7 +205,7 @@ def build_term_matrices(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """
     entries: {id: {"indices": [...], "values": [...]}}
-    id_order: list of ids whose order we want to align with dense vectors
+
     Returns:
       term_ids:  (N, max_terms) int64
       term_w:    (N, max_terms) float32
@@ -254,8 +317,6 @@ def main():
     qids = [q["qid"] for q in queries]
 
     # ---------- Load BM25 sparse JSONLs ----------
-    # bm25_docs.jsonl: {"doc_id": ..., "sparse": {"indices": [...], "values": [...]}}
-    # bm25_queries.jsonl: {"qid": ..., "sparse": {...}}
     bm25_docs_entries = {}
     for row in read_jsonl(VEC / "bm25_docs.jsonl"):
         did = row["doc_id"]
@@ -411,9 +472,19 @@ def main():
         scores = fused_q[qi] @ docs_T  # (N_docs,)
         run[qids[qi]] = topk_pairs(scores, doc_ids, args.topk)
 
+    # main metrics
     nd = compute_ndcg_at_k(run, qrels, k=10)
     mr = compute_mrr_at_k(run, qrels, k=10)
-    print(f"\nCrossAttentionFusion  nDCG@10={nd:.4f}  MRR@10={mr:.4f}")
+    p10 = compute_precision_at_k(run, qrels, k=10)      # NEW
+    r10 = compute_recall_at_k(run, qrels, k=10)         # NEW
+    map100 = compute_map_at_k(run, qrels, k=100)        # NEW
+
+    print("\nCrossAttentionFusion metrics:")
+    print(f"  nDCG@10  = {nd:.4f}")
+    print(f"  MRR@10   = {mr:.4f}")
+    print(f"  P@10     = {p10:.4f}")
+    print(f"  R@10     = {r10:.4f}")
+    print(f"  MAP@100  = {map100:.4f}")
 
     # ---------- Save run ----------
     out_run = SUB / "run_cross_attention_fusion.trec"

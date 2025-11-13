@@ -37,9 +37,54 @@ def compute_mrr_at_k(run: Dict[str, List[Tuple[str,float]]], qrels, k=10)->float
         rel = qrels.get(qid, {})
         rr=0.0
         for i,(d,_) in enumerate(ranked[:k], start=1):
-            if rel.get(d,0)>0: rr=1.0/i; break
+            if rel.get(d,0)>0:
+                rr=1.0/i
+                break
         m.append(rr)
     return float(np.mean(m)) if m else 0.0
+
+def compute_precision_at_k(run: Dict[str, List[Tuple[str,float]]], qrels, k=10)->float:
+    vals = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        topk = ranked[:k]
+        if not topk:
+            vals.append(0.0)
+            continue
+        num_rel = sum(1 for d,_ in topk if rel.get(d,0) > 0)
+        vals.append(num_rel / float(k))
+    return float(np.mean(vals)) if vals else 0.0
+
+def compute_recall_at_k(run: Dict[str, List[Tuple[str,float]]], qrels, k=10)->float:
+    vals = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        total_rel = sum(1 for _d,r in rel.items() if r > 0)
+        if total_rel == 0:
+            # standard choice: skip or count as 0; we count as 0
+            vals.append(0.0)
+            continue
+        topk = ranked[:k]
+        num_rel = sum(1 for d,_ in topk if rel.get(d,0) > 0)
+        vals.append(num_rel / float(total_rel))
+    return float(np.mean(vals)) if vals else 0.0
+
+def compute_map_at_k(run: Dict[str, List[Tuple[str,float]]], qrels, k=100)->float:
+    """Mean Average Precision at cutoff k."""
+    aps = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        hits = 0
+        precisions = []
+        for i, (d, _) in enumerate(ranked[:k], start=1):
+            if rel.get(d, 0) > 0:
+                hits += 1
+                precisions.append(hits / float(i))
+        if not precisions:
+            aps.append(0.0)
+        else:
+            aps.append(sum(precisions) / len(precisions))
+    return float(np.mean(aps)) if aps else 0.0
 
 # ---------- BM25 query builder (matches make_vectors.py) ----------
 TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -112,7 +157,8 @@ def main():
     ap.add_argument("--subset_dir", required=True, type=str)
     ap.add_argument("--vec_dirname", default="vectors_local", type=str)
     ap.add_argument("--topk", default=1000, type=int)
-    ap.add_argument("--metric_k", default=10, type=int)
+    ap.add_argument("--metric_k", default=10, type=int, help="cutoff for nDCG/MRR/P/R")
+    ap.add_argument("--map_k", default=100, type=int, help="cutoff for MAP")
     ap.add_argument("--dev_ratio", default=0.6, type=float)
     ap.add_argument("--seed", default=13, type=int)
     ap.add_argument("--rrf_k", default=60, type=int, help="RRF constant k (typical 60)")
@@ -147,7 +193,7 @@ def main():
         qrow = bm25_query_row(qtexts[qi], meta, df_arr, V)
         bm25_scores_all.append((qrow @ bm25_docs.T).toarray().ravel())
 
-    # split dev/test
+    # split dev/test (used only to fit linear weights)
     rng = np.random.RandomState(args.seed)
     order = np.arange(len(qids)); rng.shuffle(order)
     dev_n = max(1, int(len(qids)*args.dev_ratio))
@@ -158,18 +204,31 @@ def main():
     for qi in range(len(qids)):
         run_dense[qids[qi]] = topk_pairs(dense_scores_all[qi], doc_ids, args.topk)
         run_bm25[qids[qi]]  = topk_pairs(bm25_scores_all[qi],  doc_ids, args.topk)
-    base_dense_nd = compute_ndcg_at_k(run_dense, qrels, args.metric_k)
-    base_dense_mr = compute_mrr_at_k(run_dense,  qrels, args.metric_k)
-    base_bm25_nd  = compute_ndcg_at_k(run_bm25,  qrels, args.metric_k)
-    base_bm25_mr  = compute_mrr_at_k(run_bm25,   qrels, args.metric_k)
+
+    # baseline metrics
+    def all_metrics(run, name:str):
+        nd = compute_ndcg_at_k(run, qrels, args.metric_k)
+        mr = compute_mrr_at_k(run,  qrels, args.metric_k)
+        p  = compute_precision_at_k(run, qrels, args.metric_k)
+        r  = compute_recall_at_k(run,    qrels, args.metric_k)
+        m  = compute_map_at_k(run,       qrels, args.map_k)
+        print(f"{name:12s} : nDCG@{args.metric_k}={nd:.4f}  "
+              f"MRR@{args.metric_k}={mr:.4f}  "
+              f"P@{args.metric_k}={p:.4f}  "
+              f"R@{args.metric_k}={r:.4f}  "
+              f"MAP@{args.map_k}={m:.4f}")
+        return nd, mr, p, r, m
+
+    print("\n=== RESULTS (all queries) ===")
+    base_bm25 = all_metrics(run_bm25,  "BM25")
+    base_dense= all_metrics(run_dense, "Dense")
 
     # ----- 1) RRF -----
     run_rrf={}
     for qi in range(len(qids)):
         h = rrf_fusion(dense_scores_all[qi], bm25_scores_all[qi], k=args.rrf_k)
         run_rrf[qids[qi]] = topk_pairs(h, doc_ids, args.topk)
-    rrf_nd = compute_ndcg_at_k(run_rrf, qrels, args.metric_k)
-    rrf_mr = compute_mrr_at_k(run_rrf,  qrels, args.metric_k)
+    rrf_metrics = all_metrics(run_rrf, f"RRF(k={args.rrf_k})")
 
     # ----- 2) CombSUM/CombMNZ with z-score -----
     run_combsum={}; run_combmnz={}
@@ -178,15 +237,11 @@ def main():
         cm = combmnz_z(dense_scores_all[qi], bm25_scores_all[qi])
         run_combsum[qids[qi]] = topk_pairs(cs, doc_ids, args.topk)
         run_combmnz[qids[qi]] = topk_pairs(cm, doc_ids, args.topk)
-    cs_nd = compute_ndcg_at_k(run_combsum, qrels, args.metric_k)
-    cs_mr = compute_mrr_at_k(run_combsum,  qrels, args.metric_k)
-    cm_nd = compute_ndcg_at_k(run_combmnz, qrels, args.metric_k)
-    cm_mr = compute_mrr_at_k(run_combmnz,  qrels, args.metric_k)
+    cs_metrics = all_metrics(run_combsum, "CombSUM-z")
+    cm_metrics = all_metrics(run_combmnz, "CombMNZ-z")
 
     # ----- 3) Learned linear (no α constraint) -----
-    # Train w,b on DEV to maximize nDCG would require LTR; here we least-squares fit to oracle per-doc pseudo-targets:
-    # target relevance y_i ∈ {0,1} for top-M docs per query; fit s = w1*dense + w2*bm25 + b to separate.
-    # Simple and fast; improves over fixed α often.
+    # Train w,b on DEV to separate relevant vs non-relevant with least squares on [dense, bm25, 1]
     M = 200  # fit on top-200 union to stay light
     feats=[]; targets=[]
     for qi in dev_idx:
@@ -210,23 +265,13 @@ def main():
         d = dense_scores_all[qi]; b = bm25_scores_all[qi]
         s = w_full[0]*d + w_full[1]*b + w_full[2]
         run_lin[qids[qi]] = topk_pairs(s, doc_ids, args.topk)
-    lin_nd = compute_ndcg_at_k(run_lin, qrels, args.metric_k)
-    lin_mr = compute_mrr_at_k(run_lin,  qrels, args.metric_k)
+    lin_metrics = all_metrics(run_lin, "Linear-LSQ")
+    print(f"Linear weights w=[{w_full[0]:.3f}, {w_full[1]:.3f}], b={w_full[2]:.3f}")
 
     # ----- (Optional) “new vector” interpretation without α -----
-    # Standardize channels per-query and sum inner-products:
+    # Standardize channels per-query and sum inner-products on scores:
     #   s = < z(dense_q), z(dense_docs) > + < z(bm25_q), z(bm25_docs) >
-    # We won't write a separate run; CombSUM-z already realizes this idea on scores.
-
-    # ----- report -----
-    print("\n=== RESULTS (all queries) ===")
-    print(f"BM25        : nDCG@{args.metric_k}={base_bm25_nd:.4f}  MRR@{args.metric_k}={base_bm25_mr:.4f}")
-    print(f"Dense       : nDCG@{args.metric_k}={base_dense_nd:.4f}  MRR@{args.metric_k}={base_dense_mr:.4f}")
-    print(f"RRF (k={args.rrf_k}) : nDCG@{args.metric_k}={rrf_nd:.4f}  MRR@{args.metric_k}={rrf_mr:.4f}")
-    print(f"CombSUM-z   : nDCG@{args.metric_k}={cs_nd:.4f}  MRR@{args.metric_k}={cs_mr:.4f}")
-    print(f"CombMNZ-z   : nDCG@{args.metric_k}={cm_nd:.4f}  MRR@{args.metric_k}={cm_mr:.4f}")
-    print(f"Linear (LSQ): nDCG@{args.metric_k}={lin_nd:.4f}  MRR@{args.metric_k}={lin_mr:.4f}")
-    print(f"Linear weights w=[{w_full[0]:.3f}, {w_full[1]:.3f}], b={w_full[2]:.3f}")
+    # CombSUM-z already realizes the same idea on the score level.
 
     # ----- write runs -----
     trec_write(SUB / "run_rrf.trec",        run_rrf,     f"rrf_k{args.rrf_k}")
@@ -237,6 +282,7 @@ def main():
     trec_write(SUB / "run_dense_vec.trec",  run_dense,   "dense_vec")
     print("\nWrote TREC runs to subset dir.")
     print("Done.")
+
 if __name__ == "__main__":
     main()
 
