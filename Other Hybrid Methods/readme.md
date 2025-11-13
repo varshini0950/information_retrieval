@@ -11,14 +11,29 @@ A complete retrieval framework combining **sparse lexical relevance** and **dens
 
 ---
 
-# 📁 Project Structure
+**NOTE:** All the other files are made by me for creating a base of the project in which I runned only the part of the dataset bier trec covid itself 
+#  Project Structure
+```
+├── make_vectors.py
+├── hybrid_no_alpha.py
+├── build_concat.py
+├── hybrid_sum.py
+├── hybrid_hadamard.py
+├── cross_attention_fusion.py
+├── eval_all_systems.py
+├── compare_hybrids.py
+└── work/
+    └── subsets/
+        └── beir_trec-covid/
+            └── subset_1/
+```
 
 
 
 
 ---
 **NOTE:** All the other files are made by me for creating a base of the project in which I runned only the part of the dataset bier trec covid itself  
-# 🚀 1. `make_vectors.py`
+#  1. `make_vectors.py`
 ### **Purpose:**  
 Generate all foundational vectors used by hybrid systems.
 
@@ -32,7 +47,7 @@ Generate all foundational vectors used by hybrid systems.
 
 ---
 
-# 🚀 2. `hybrid_no_alpha.py` — Score-Level Fusion
+# 2. `hybrid_no_alpha.py` — Score-Level Fusion
 
 Implements classical **score-combination fusion** (no α required).
 
@@ -54,7 +69,7 @@ Implements classical **score-combination fusion** (no α required).
 
 ---
 
-# 🚀 3. `hybrid_sum.py` — Vector SUM Fusion
+#  3. `hybrid_sum.py` — Vector SUM Fusion
 
 ### Fusion Rule:
 
@@ -72,7 +87,7 @@ hybrid = λ_dense * dense + λ_sparse * projected_sparse
 
 ---
 
-# 🚀 4. `hybrid_hadamard.py` — Hadamard Multiplicative Fusion
+#  4. `hybrid_hadamard.py` — Hadamard Multiplicative Fusion
 
 ### Fusion Rule:
 ybrid = dense ⊙ (1 + λ_sparse * tanh(projected_sparse))
@@ -85,21 +100,9 @@ ybrid = dense ⊙ (1 + λ_sparse * tanh(projected_sparse))
 
 ---
 
-# 🚀 5. `cross_attention_fusion.py` — Transformer-Based Fusion
 
-Builds hybrid vectors using **cross-attention between dense embedding and BM25 terms**.
 
-### Sequence Input:
-
-### Outputs:
-- `hybrid_hadamard_docs.npy`
-- `hybrid_hadamard_queries.npy`
-- `hybrid_hadamard_meta.json`
-- `run_hybrid_hadamard.trec`
-
----
-
-# 🚀 5. `cross_attention_fusion.py` — Transformer-Based Fusion
+#  5. `cross_attention_fusion.py` — Transformer-Based Fusion
 
 Builds hybrid vectors using **cross-attention between dense embedding and BM25 terms**.
 
@@ -114,14 +117,14 @@ Builds hybrid vectors using **cross-attention between dense embedding and BM25 t
 
 ---
 
-# 📊 6. `eval_all_systems.py` — Unified Evaluation
+#  6. `eval_all_systems.py` — Unified Evaluation
 
 Metrics evaluated:
-- ⭐ nDCG@10  
-- ⭐ MRR@10  
-- ⭐ Precision@10  
-- ⭐ Recall@10  
-- ⭐ MAP@100  
+-  nDCG@10  
+-  MRR@10  
+-  Precision@10  
+-  Recall@10  
+-  MAP@100  
 
 ### Outputs:
 - `metrics_summary.csv`
@@ -143,7 +146,7 @@ Metrics evaluated:
 
 ---
 
-# 🛠️ Recommended Execution Pipeline
+# Recommended Execution Pipeline
 
 ### **Step 1 — Build Base Vectors**
 ```bash
