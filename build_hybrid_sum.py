@@ -98,6 +98,58 @@ def compute_mrr_at_k(run: Dict[str, List[Tuple[str, float]]],
     return float(np.mean(mrrs)) if mrrs else 0.0
 
 
+def compute_precision_at_k(run: Dict[str, List[Tuple[str, float]]],
+                           qrels: Dict[str, Dict[str, int]], k: int = 10) -> float:
+    precisions = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        top = ranked[:k]
+        if not top:
+            precisions.append(0.0)
+            continue
+        rel_hits = sum(1 for docid, _ in top if rel.get(docid, 0) > 0)
+        precisions.append(rel_hits / float(k))
+    return float(np.mean(precisions)) if precisions else 0.0
+
+
+def compute_recall_at_k(run: Dict[str, List[Tuple[str, float]]],
+                        qrels: Dict[str, Dict[str, int]], k: int = 10) -> float:
+    recalls = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        R = sum(1 for r in rel.values() if r > 0)
+        if R == 0:
+            # no relevant docs -> conventionally recall = 0 for this query
+            recalls.append(0.0)
+            continue
+        top = ranked[:k]
+        rel_hits = sum(1 for docid, _ in top if rel.get(docid, 0) > 0)
+        recalls.append(rel_hits / float(R))
+    return float(np.mean(recalls)) if recalls else 0.0
+
+
+def compute_map_at_k(run: Dict[str, List[Tuple[str, float]]],
+                     qrels: Dict[str, Dict[str, int]], k: int = 100) -> float:
+    aps = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        R = sum(1 for r in rel.values() if r > 0)
+        if R == 0:
+            aps.append(0.0)
+            continue
+        num_rel_so_far = 0
+        sum_precisions = 0.0
+        for i, (docid, _) in enumerate(ranked[:k], start=1):
+            if rel.get(docid, 0) > 0:
+                num_rel_so_far += 1
+                sum_precisions += num_rel_so_far / float(i)
+        if num_rel_so_far == 0:
+            aps.append(0.0)
+        else:
+            aps.append(sum_precisions / float(R))
+    return float(np.mean(aps)) if aps else 0.0
+
+
 def topk_pairs(scores: np.ndarray, ids: List[str], K: int) -> List[Tuple[str, float]]:
     K = min(K, scores.size)
     idx = np.argpartition(-scores, K - 1)[:K]
@@ -233,9 +285,14 @@ def main():
         for r in read_jsonl(SUB / "qrels.jsonl"):
             qrels.setdefault(str(r["qid"]), {})[str(r["doc_id"])] = int(r["rel"])
 
-        nd = compute_ndcg_at_k(run, qrels, k=10)
-        mr = compute_mrr_at_k(run, qrels, k=10)
-        print(f"\nHybrid-SUM   nDCG@10={nd:.4f}  MRR@10={mr:.4f}")
+        nd   = compute_ndcg_at_k(run, qrels, k=10)
+        mr   = compute_mrr_at_k(run,  qrels, k=10)
+        p10  = compute_precision_at_k(run, qrels, k=10)
+        r10  = compute_recall_at_k(run,    qrels, k=10)
+        map100 = compute_map_at_k(run,     qrels, k=100)
+
+        print(f"\nHybrid-SUM   nDCG@10={nd:.4f}  MRR@10={mr:.4f}  "
+              f"P@10={p10:.4f}  R@10={r10:.4f}  MAP@100={map100:.4f}")
 
         out_run = SUB / "run_hybrid_sum.trec"
         with out_run.open("w", encoding="utf-8") as f:

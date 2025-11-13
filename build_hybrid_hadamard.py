@@ -53,7 +53,6 @@ def l2_normalize(mat: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norms = np.maximum(norms, eps)
     return mat / norms
 
-
 # ----------------- Metrics -----------------
 def ndcg_at_k_single(qid: str, ranked_ids: List[str],
                      qrels: Dict[str, Dict[str, int]], k: int = 10) -> float:
@@ -90,6 +89,54 @@ def compute_mrr_at_k(run: Dict[str, List[Tuple[str, float]]],
     return float(np.mean(mrrs)) if mrrs else 0.0
 
 
+def compute_precision_at_k(run: Dict[str, List[Tuple[str, float]]],
+                           qrels: Dict[str, Dict[str, int]], k: int = 10) -> float:
+    vals = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        topk = ranked[:k]
+        if not topk:
+            vals.append(0.0)
+            continue
+        num_rel = sum(1 for d, _ in topk if rel.get(d, 0) > 0)
+        vals.append(num_rel / float(k))
+    return float(np.mean(vals)) if vals else 0.0
+
+
+def compute_recall_at_k(run: Dict[str, List[Tuple[str, float]]],
+                        qrels: Dict[str, Dict[str, int]], k: int = 10) -> float:
+    vals = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        total_rel = sum(1 for _d, r in rel.items() if r > 0)
+        if total_rel == 0:
+            vals.append(0.0)
+            continue
+        topk = ranked[:k]
+        num_rel = sum(1 for d, _ in topk if rel.get(d, 0) > 0)
+        vals.append(num_rel / float(total_rel))
+    return float(np.mean(vals)) if vals else 0.0
+
+
+def compute_map_at_k(run: Dict[str, List[Tuple[str, float]]],
+                     qrels: Dict[str, Dict[str, int]], k: int = 100) -> float:
+    """Mean Average Precision at cutoff k."""
+    aps = []
+    for qid, ranked in run.items():
+        rel = qrels.get(qid, {})
+        hits = 0
+        precisions = []
+        for i, (d, _) in enumerate(ranked[:k], start=1):
+            if rel.get(d, 0) > 0:
+                hits += 1
+                precisions.append(hits / float(i))
+        if not precisions:
+            aps.append(0.0)
+        else:
+            aps.append(sum(precisions) / len(precisions))
+    return float(np.mean(aps)) if aps else 0.0
+
+
 def topk_pairs(scores: np.ndarray, ids: List[str], K: int) -> List[Tuple[str, float]]:
     K = min(K, scores.size)
     idx = np.argpartition(-scores, K - 1)[:K]
@@ -99,7 +146,9 @@ def topk_pairs(scores: np.ndarray, ids: List[str], K: int) -> List[Tuple[str, fl
 
 # ----------------- Main -----------------
 def main():
-    ap = argparse.ArgumentParser(description="Hybrid Hadamard fusion: dense ⊙ (1 + λ_s * projected_sparse).")
+    ap = argparse.ArgumentParser(
+        description="Hybrid Hadamard fusion: dense ⊙ (1 + λ_s * projected_sparse)."
+    )
     ap.add_argument("--subset_dir", type=str, required=True,
                     help="Subset dir with corpus.jsonl, queries.jsonl, qrels.jsonl")
     ap.add_argument("--vec_dirname", type=str, default="vectors_local",
@@ -112,6 +161,10 @@ def main():
                     help="L2-normalize dense & sparse projections before Hadamard")
     ap.add_argument("--write_run", action="store_true")
     ap.add_argument("--topk", type=int, default=1000)
+    ap.add_argument("--metric_k", type=int, default=10,
+                    help="cutoff for nDCG/MRR/P/R")
+    ap.add_argument("--map_k", type=int, default=100,
+                    help="cutoff for MAP")
     args = ap.parse_args()
 
     SUB = Path(args.subset_dir)
@@ -175,7 +228,6 @@ def main():
         proj_q     = l2_normalize(proj_q)
 
     # ---- Build multiplicative gate: scale = 1 + λ_s * proj_sparse ----
-    # We slightly squash sparse projection to keep things stable:
     gate_docs = 1.0 + args.lambda_sparse * np.tanh(proj_docs)
     gate_q    = 1.0 + args.lambda_sparse * np.tanh(proj_q)
 
@@ -216,9 +268,19 @@ def main():
         for r in read_jsonl(SUB / "qrels.jsonl"):
             qrels.setdefault(str(r["qid"]), {})[str(r["doc_id"])] = int(r["rel"])
 
-        nd = compute_ndcg_at_k(run, qrels, k=10)
-        mr = compute_mrr_at_k(run, qrels, k=10)
-        print(f"\nHybrid-Hadamard  nDCG@10={nd:.4f}  MRR@10={mr:.4f}")
+        # compute all metrics
+        nd = compute_ndcg_at_k(run, qrels, k=args.metric_k)
+        mr = compute_mrr_at_k(run, qrels, k=args.metric_k)
+        p  = compute_precision_at_k(run, qrels, k=args.metric_k)
+        rc = compute_recall_at_k(run, qrels, k=args.metric_k)
+        mp = compute_map_at_k(run, qrels, k=args.map_k)
+
+        print(f"\nHybrid-Hadamard : "
+              f"nDCG@{args.metric_k}={nd:.4f}  "
+              f"MRR@{args.metric_k}={mr:.4f}  "
+              f"P@{args.metric_k}={p:.4f}  "
+              f"R@{args.metric_k}={rc:.4f}  "
+              f"MAP@{args.map_k}={mp:.4f}")
 
         out_run = SUB / "run_hybrid_hadamard.trec"
         with out_run.open("w", encoding="utf-8") as f:
